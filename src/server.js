@@ -31,6 +31,7 @@ app.post('/api/scrape', async (req, res) => {
 			? keywords
 			: String(keywords).split(',').map((s) => s.trim()).filter(Boolean);
 
+		console.log('Scraping advertisers...');
 		const results = await scrapeAdvertisers({
 			keywords: keywordList,
 			country,
