@@ -51,6 +51,29 @@ async function locateAdCards(page) {
 	return cardHandles;
 }
 
+async function dismissOverlays(page) {
+    const selectors = [
+        'button:has-text("Allow all cookies")',
+        'button:has-text("Accept All Cookies")',
+        'button:has-text("Accept all")',
+        'button:has-text("Accept")',
+        'button:has-text("Only allow essential cookies")',
+        'button:has-text("Essential cookies only")',
+        'button:has-text("Continue")',
+        'button:has-text("Not Now")',
+        'div[role="dialog"] button:has-text("OK")',
+    ];
+    for (const sel of selectors) {
+        try {
+            const btn = page.locator(sel).first();
+            if (await btn.isVisible().catch(() => false)) {
+                console.log(`Dismissing overlay via selector: ${sel}`);
+                await btn.click({ timeout: 2000 }).catch(() => {});
+            }
+        } catch {}
+    }
+}
+
 export async function scrapeAdvertisers({ keywords, country, minMonths, limitPerKeyword, headless, timeout }) {
     console.log(`Launching browser (headless=${headless})...`);
     const browser = await chromium.launch({ headless });
@@ -64,11 +87,17 @@ export async function scrapeAdvertisers({ keywords, country, minMonths, limitPer
 
 	const advertiserMap = new Map();
 
-	for (const keyword of keywords) {
+    for (const keyword of keywords) {
         const url = searchUrlFor({ keyword, country });
         console.log(`Keyword: "${keyword}" → ${url}`);
-        await page.goto(url, { waitUntil: 'domcontentloaded' });
-        await page.waitForLoadState('networkidle', { timeout: timeout / 2 }).catch(() => {});
+        try {
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout });
+        } catch (err) {
+            console.log(`Navigation error (continuing): ${String(err && err.message ? err.message : err)}`);
+        }
+        await page.waitForTimeout(1500);
+        await dismissOverlays(page).catch(() => {});
+        await page.waitForLoadState('networkidle', { timeout: Math.max(2000, Math.floor(timeout / 3)) }).catch(() => {});
 
 		// Accept cookies if prompted
         const acceptVariants = [
@@ -90,6 +119,11 @@ export async function scrapeAdvertisers({ keywords, country, minMonths, limitPer
         await autoScroll(page, { maxScrolls: Math.max(10, Math.ceil(limitPerKeyword / 10)) });
         const cards = await locateAdCards(page);
         console.log(`Found ~${cards.length} ad cards, will inspect up to ${Math.min(cards.length, limitPerKeyword)}.`);
+        if (!cards.length) {
+            console.log('No cards detected by text. Trying a brief additional scroll and overlay dismiss...');
+            await dismissOverlays(page).catch(() => {});
+            await autoScroll(page, { maxScrolls: 8, scrollDelayMs: 700 });
+        }
 
 		for (let i = 0; i < cards.length && i < limitPerKeyword; i += 1) {
 			const handle = cards[i];
