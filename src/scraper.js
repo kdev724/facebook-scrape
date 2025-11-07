@@ -51,7 +51,7 @@ async function locateAdCards(page) {
 	return cardHandles;
 }
 
-export async function scrapeAdvertisers({ keywords, country, minMonths, limitPerKeyword, headless, timeout, logger }) {
+export async function scrapeAdvertisers({ keywords, country, minMonths, limitPerKeyword, headless, timeout }) {
     console.log(`Launching browser (headless=${headless})...`);
     const browser = await chromium.launch({ headless });
 	const context = await browser.newContext({

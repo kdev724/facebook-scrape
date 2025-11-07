@@ -20,7 +20,6 @@ app.post('/api/scrape', async (req, res) => {
 		limit = 100,
 		headless = true,
 		timeout = 30000,
-		verbose = false,
 	} = req.body || {};
 
 	try {
@@ -39,7 +38,6 @@ app.post('/api/scrape', async (req, res) => {
 			limitPerKeyword: Number(limit),
 			headless: Boolean(headless),
 			timeout: Number(timeout),
-			logger: verbose ? (...args) => console.log('[api]', ...args) : undefined,
 		});
 
 		return res.json({ count: results.length, results });
