@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+	<title>Facebook Ads Library Scraper</title>
+	<style>
+		body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; color: #111; }
+		h1 { font-size: 20px; margin-bottom: 12px; }
+		form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; max-width: 900px; margin-bottom: 16px; }
+		label { font-weight: 600; font-size: 12px; color: #444; margin-bottom: 4px; display: block; }
+		input[type="text"], input[type="number"] { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 6px; }
+		.row { display: flex; flex-direction: column; }
+		.col-span-2 { grid-column: span 2; }
+		button { padding: 10px 14px; border: none; border-radius: 6px; background: #2563eb; color: white; cursor: pointer; }
+		button[disabled] { opacity: 0.6; cursor: not-allowed; }
+		table { border-collapse: collapse; width: 100%; margin-top: 16px; }
+		th, td { border: 1px solid #eee; padding: 8px; text-align: left; vertical-align: top; }
+		th { background: #f8fafc; font-weight: 600; }
+		controls { display: flex; gap: 8px; }
+		.small { font-size: 12px; color: #666; }
+	</style>
+</head>
+<body>
+	<h1>Facebook Ads Library Scraper</h1>
+	<form id="scrape-form">
+		<div class="row col-span-2">
+			<label for="keywords">Keywords (comma-separated)</label>
+			<input id="keywords" type="text" placeholder="home painter, Benjamin Moore" />
+		</div>
+		<div class="row">
+			<label for="country">Country</label>
+			<input id="country" type="text" value="US" />
+		</div>
+		<div class="row">
+			<label for="minMonths">Min months running</label>
+			<input id="minMonths" type="number" min="0" value="3" />
+		</div>
+		<div class="row">
+			<label for="limit">Max ad cards per keyword</label>
+			<input id="limit" type="number" min="1" value="60" />
+		</div>
+		<div class="row">
+			<label for="timeout">Timeout (ms)</label>
+			<input id="timeout" type="number" min="5000" value="30000" />
+		</div>
+		<div class="row">
+			<label for="headless">Headless</label>
+			<input id="headless" type="checkbox" checked />
+			<span class="small">Uncheck to watch the browser</span>
+		</div>
+		<div class="row col-span-2">
+			<controls>
+				<button id="run" type="submit">Run Scraper</button>
+				<button id="download" type="button" disabled>Download CSV</button>
+			</controls>
+			<div id="status" class="small" style="margin-top:8px;"></div>
+		</div>
+	</form>
+
+	<div id="results"></div>
+
+	<script>
+		const form = document.getElementById('scrape-form');
+		const statusEl = document.getElementById('status');
+		const resultsEl = document.getElementById('results');
+		const downloadBtn = document.getElementById('download');
+		const runBtn = document.getElementById('run');
+		let lastResults = [];
+
+		form.addEventListener('submit', async (e) => {
+			e.preventDefault();
+			const keywords = document.getElementById('keywords').value.trim();
+			const country = document.getElementById('country').value.trim() || 'US';
+			const minMonths = Number(document.getElementById('minMonths').value || 3);
+			const limit = Number(document.getElementById('limit').value || 60);
+			const timeout = Number(document.getElementById('timeout').value || 30000);
+			const headless = document.getElementById('headless').checked;
+
+			if (!keywords) {
+				alert('Please enter at least one keyword.');
+				return;
+			}
+			setBusy(true);
+			statusEl.textContent = 'Running... This can take a few minutes.';
+			resultsEl.innerHTML = '';
+			lastResults = [];
+			try {
+				const resp = await fetch('/api/scrape', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ keywords, country, minMonths, limit, headless, timeout }),
+				});
+				if (!resp.ok) {
+					const err = await safeJson(resp);
+					throw new Error(err && err.error ? err.error : 'Request failed');
+				}
+				const data = await resp.json();
+				lastResults = data.results || [];
+				statusEl.textContent = `Done. Found ${lastResults.length} advertisers.`;
+				renderTable(lastResults);
+				downloadBtn.disabled = lastResults.length === 0;
+			} catch (err) {
+				console.error(err);
+				statusEl.textContent = 'Error: ' + err.message;
+			} finally {
+				setBusy(false);
+			}
+		});
+
+		downloadBtn.addEventListener('click', () => {
+			if (!lastResults.length) return;
+			const csv = toCsv(lastResults);
+			const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = `results-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+			document.body.appendChild(a);
+			a.click();
+			document.body.removeChild(a);
+			URL.revokeObjectURL(url);
+		});
+
+		function setBusy(busy) {
+			runBtn.disabled = busy;
+			downloadBtn.disabled = busy || !lastResults.length;
+		}
+
+		function renderTable(rows) {
+			if (!rows.length) {
+				resultsEl.innerHTML = '<div class="small">No results.</div>';
+				return;
+			}
+			const html = [
+				'<table>',
+				'<thead><tr>',
+				'<th>Company</th>',
+				'<th>Phone</th>',
+				'<th>Email</th>',
+				'<th>Address</th>',
+				'<th>Facebook Page</th>',
+				'<th>Months Running</th>',
+				'<th>Followers</th>',
+				'<th>Keywords</th>',
+				'</tr></thead>',
+				'<tbody>',
+				...rows.map(r => {
+					const link = r.facebookPageUrl ? `<a href="${escapeHtml(r.facebookPageUrl)}" target="_blank" rel="noopener">Open</a>` : '';
+					return `<tr>
+						<td>${escapeHtml(r.companyName || '')}</td>
+						<td>${escapeHtml((r.contact && r.contact.phone) || '')}</td>
+						<td>${escapeHtml((r.contact && r.contact.email) || '')}</td>
+						<td>${escapeHtml((r.contact && r.contact.address) || '')}</td>
+						<td>${link}</td>
+						<td>${r.monthsRunning ?? ''}</td>
+						<td>${r.followers ?? ''}</td>
+						<td>${Array.isArray(r.keywordsMatched) ? escapeHtml(r.keywordsMatched.join('; ')) : ''}</td>
+					</tr>`;
+				}),
+				'</tbody></table>'
+			].join('');
+			resultsEl.innerHTML = html;
+		}
+
+		function toCsv(rows) {
+			const headers = ['CompanyName','Phone','Email','Address','FacebookPageUrl','MonthsRunning','Followers','KeywordsMatched'];
+			const escape = (v) => {
+				const s = String(v ?? '');
+				if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+				return s;
+			};
+			const lines = [headers.join(',')];
+			for (const r of rows) {
+				lines.push([
+					escape(r.companyName),
+					escape(r.contact && r.contact.phone),
+					escape(r.contact && r.contact.email),
+					escape(r.contact && r.contact.address),
+					escape(r.facebookPageUrl),
+					escape(r.monthsRunning),
+					escape(r.followers),
+					escape(Array.isArray(r.keywordsMatched) ? r.keywordsMatched.join('; ') : '')
+				].join(','));
+			}
+			return lines.join('\n');
+		}
+
+		async function safeJson(resp) {
+			try { return await resp.json(); } catch { return null; }
+		}
+		function escapeHtml(s) {
+			return String(s || '')
+				.replace(/&/g, '&amp;')
+				.replace(/</g, '&lt;')
+				.replace(/>/g, '&gt;')
+				.replace(/"/g, '&quot;')
+				.replace(/'/g, '&#039;');
+		}
+	</script>
+</body>
+</html>
+
+

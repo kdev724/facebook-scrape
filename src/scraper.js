@@ -1,0 +1,131 @@
+import { chromium } from 'playwright';
+import { parseAdvertiserFromAdCard, computeMonthsBetween, getUniqueKey } from './utils.js';
+import { enrichPageDetails } from './facebookPageParser.js';
+
+const ADS_LIBRARY_BASE = 'https://www.facebook.com/ads/library/';
+
+function searchUrlFor({ keyword, country }) {
+	const params = new URLSearchParams();
+	params.set('active_status', 'active');
+	params.set('ad_type', 'all');
+	params.set('country', country);
+	params.set('q', keyword);
+	// sort by relevancy as default; FB may ignore
+	params.set('sort_data[mode]', 'relevancy_monthly_grouped');
+	params.set('sort_data[direction]', 'desc');
+	return `${ADS_LIBRARY_BASE}?${params.toString()}`;
+}
+
+async function autoScroll(page, { maxScrolls = 30, scrollDelayMs = 800 }) {
+	let previousHeight = 0;
+	for (let i = 0; i < maxScrolls; i += 1) {
+		await page.evaluate(() => {
+			window.scrollBy(0, window.innerHeight * 0.9);
+		});
+		await page.waitForTimeout(scrollDelayMs);
+		const currentHeight = await page.evaluate(() => document.body.scrollHeight);
+		if (currentHeight === previousHeight) break;
+		previousHeight = currentHeight;
+	}
+}
+
+async function locateAdCards(page) {
+	// Heuristics: find elements containing the phrase that typically appears on ads
+	// "Ad started running on" is a stable text. Use it to find parent cards.
+	const adTextLocator = page.locator('text="Ad started running on"');
+	const count = await adTextLocator.count();
+	const cardHandles = [];
+	for (let i = 0; i < count; i += 1) {
+		const textEl = adTextLocator.nth(i);
+		// ascend to a larger container
+		const card = await textEl.evaluateHandle((el) => {
+			let node = el;
+			for (let j = 0; j < 6; j += 1) {
+				if (!node || !node.parentElement) break;
+				node = node.parentElement;
+			}
+			return node;
+		});
+		cardHandles.push(card);
+	}
+	return cardHandles;
+}
+
+export async function scrapeAdvertisers({ keywords, country, minMonths, limitPerKeyword, headless, timeout }) {
+	const browser = await chromium.launch({ headless });
+	const context = await browser.newContext({
+		viewport: { width: 1440, height: 900 },
+		// lower fingerprinting. Disable geolocation prompts, etc.
+		permissions: [],
+	});
+	const page = await context.newPage();
+	page.setDefaultTimeout(timeout);
+
+	const advertiserMap = new Map();
+
+	for (const keyword of keywords) {
+		const url = searchUrlFor({ keyword, country });
+		await page.goto(url, { waitUntil: 'domcontentloaded' });
+		await page.waitForLoadState('networkidle', { timeout: timeout / 2 }).catch(() => {});
+
+		// Accept cookies if prompted
+		const acceptBtn = page.locator('button:has-text("Allow all cookies"), button:has-text("Accept all")');
+		if (await acceptBtn.first().isVisible().catch(() => false)) {
+			await acceptBtn.first().click().catch(() => {});
+		}
+
+		await autoScroll(page, { maxScrolls: Math.max(10, Math.ceil(limitPerKeyword / 10)) });
+		const cards = await locateAdCards(page);
+
+		for (let i = 0; i < cards.length && i < limitPerKeyword; i += 1) {
+			const handle = cards[i];
+			try {
+				const ad = await parseAdvertiserFromAdCard(page, handle);
+				if (!ad || !ad.pageUrl || !ad.pageName || !ad.startedAt) continue;
+
+				const months = computeMonthsBetween(new Date(ad.startedAt), new Date());
+				if (months < minMonths) continue;
+
+				const key = getUniqueKey(ad.pageUrl, ad.pageName);
+				if (!advertiserMap.has(key)) {
+					advertiserMap.set(key, {
+						companyName: ad.pageName,
+						facebookPageUrl: ad.pageUrl,
+						monthsRunning: months,
+						followers: null,
+						contact: { phone: null, email: null, address: null },
+						keywordsMatched: [keyword],
+					});
+				} else {
+					const existing = advertiserMap.get(key);
+					existing.monthsRunning = Math.max(existing.monthsRunning, months);
+					if (!existing.keywordsMatched.includes(keyword)) existing.keywordsMatched.push(keyword);
+				}
+			} catch (err) {
+				// non-fatal; continue
+			}
+		}
+	}
+
+	// Enrich each unique page with follower/contact details
+	const advertisers = Array.from(advertiserMap.values());
+	for (let i = 0; i < advertisers.length; i += 1) {
+		const adv = advertisers[i];
+		try {
+			const details = await enrichPageDetails(page, adv.facebookPageUrl);
+			adv.followers = details.followers ?? adv.followers;
+			adv.contact = {
+				phone: details.phone ?? adv.contact.phone,
+				email: details.email ?? adv.contact.email,
+				address: details.address ?? adv.contact.address,
+			};
+		} catch (err) {
+			// continue
+		}
+	}
+
+	await browser.close();
+	return advertisers;
+}
+
+
