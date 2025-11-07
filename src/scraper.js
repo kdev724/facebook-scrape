@@ -1,4 +1,6 @@
 import { chromium } from 'playwright';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { parseAdvertiserFromAdCard, computeMonthsBetween, getUniqueKey } from './utils.js';
 import { enrichPageDetails } from './facebookPageParser.js';
 
@@ -31,8 +33,8 @@ async function autoScroll(page, { maxScrolls = 30, scrollDelayMs = 800 }) {
 
 async function locateAdCards(page) {
 	// Heuristics: find elements containing the phrase that typically appears on ads
-	// "Ad started running on" is a stable text. Use it to find parent cards.
-	const adTextLocator = page.locator('text="Ad started running on"');
+	// Use case-insensitive partial text to be resilient to minor wording changes.
+	const adTextLocator = page.locator('text=/Ad\s+started\s+running\s+on/i');
 	const count = await adTextLocator.count();
 	const cardHandles = [];
 	for (let i = 0; i < count; i += 1) {
@@ -121,12 +123,25 @@ export async function scrapeAdvertisers({ keywords, country, minMonths, limitPer
 
         console.log('Scrolling results...');
         await autoScroll(page, { maxScrolls: Math.max(10, Math.ceil(limitPerKeyword / 10)) });
-        const cards = await locateAdCards(page);
+		let cards = await locateAdCards(page);
         console.log(`Found ~${cards.length} ad cards, will inspect up to ${Math.min(cards.length, limitPerKeyword)}.`);
         if (!cards.length) {
             console.log('No cards detected by text. Trying a brief additional scroll and overlay dismiss...');
             await dismissOverlays(page).catch(() => {});
             await autoScroll(page, { maxScrolls: 8, scrollDelayMs: 700 });
+			cards = await locateAdCards(page);
+			console.log(`After fallback, cards detected: ${cards.length}`);
+			if (!cards.length) {
+				const outDir = path.join(process.cwd(), 'output');
+				await fs.mkdir(outDir, { recursive: true }).catch(() => {});
+				const ts = new Date().toISOString().replace(/[:.]/g, '-');
+				const safeKw = String(keyword).replace(/[^A-Za-z0-9_-]+/g, '-').slice(0, 40) || 'kw';
+				const htmlPath = path.join(outDir, `debug-${safeKw}-${ts}.html`);
+				const pngPath = path.join(outDir, `debug-${safeKw}-${ts}.png`);
+				await fs.writeFile(htmlPath, await page.content()).catch(() => {});
+				await page.screenshot({ path: pngPath, fullPage: true }).catch(() => {});
+				console.log(`Saved debug snapshot: ${htmlPath} and ${pngPath}`);
+			}
         }
 
 		for (let i = 0; i < cards.length && i < limitPerKeyword; i += 1) {
