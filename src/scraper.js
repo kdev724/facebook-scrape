@@ -95,10 +95,13 @@ export async function scrapeAdvertisers({ keywords, country, minMonths, limitPer
         } catch (err) {
             console.log(`Navigation error (continuing): ${String(err && err.message ? err.message : err)}`);
         }
+		console.log('Waiting for 1500ms...');
         await page.waitForTimeout(1500);
+        console.log('Dismissing overlays...');
         await dismissOverlays(page).catch(() => {});
+        console.log('Waiting for load state...');
         await page.waitForLoadState('networkidle', { timeout: Math.max(2000, Math.floor(timeout / 3)) }).catch(() => {});
-
+		console.log('Loading state done');
 		// Accept cookies if prompted
         const acceptVariants = [
             'button:has-text("Allow all cookies")',
@@ -108,6 +111,7 @@ export async function scrapeAdvertisers({ keywords, country, minMonths, limitPer
         ];
         for (const sel of acceptVariants) {
             const btn = page.locator(sel).first();
+			console.log(btn)
             if (await btn.isVisible().catch(() => false)) {
                 console.log('Accepting cookies...');
                 await btn.click().catch(() => {});
