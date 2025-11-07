@@ -51,8 +51,10 @@ async function locateAdCards(page) {
 	return cardHandles;
 }
 
-export async function scrapeAdvertisers({ keywords, country, minMonths, limitPerKeyword, headless, timeout }) {
-	const browser = await chromium.launch({ headless });
+export async function scrapeAdvertisers({ keywords, country, minMonths, limitPerKeyword, headless, timeout, logger }) {
+    const log = typeof logger === 'function' ? logger : () => {};
+    log(`Launching browser (headless=${headless})...`);
+    const browser = await chromium.launch({ headless });
 	const context = await browser.newContext({
 		viewport: { width: 1440, height: 900 },
 		// lower fingerprinting. Disable geolocation prompts, etc.
@@ -64,23 +66,36 @@ export async function scrapeAdvertisers({ keywords, country, minMonths, limitPer
 	const advertiserMap = new Map();
 
 	for (const keyword of keywords) {
-		const url = searchUrlFor({ keyword, country });
-		await page.goto(url, { waitUntil: 'domcontentloaded' });
-		await page.waitForLoadState('networkidle', { timeout: timeout / 2 }).catch(() => {});
+        const url = searchUrlFor({ keyword, country });
+        log(`Keyword: "${keyword}" → ${url}`);
+        await page.goto(url, { waitUntil: 'domcontentloaded' });
+        await page.waitForLoadState('networkidle', { timeout: timeout / 2 }).catch(() => {});
 
 		// Accept cookies if prompted
-		const acceptBtn = page.locator('button:has-text("Allow all cookies"), button:has-text("Accept all")');
-		if (await acceptBtn.first().isVisible().catch(() => false)) {
-			await acceptBtn.first().click().catch(() => {});
-		}
+        const acceptVariants = [
+            'button:has-text("Allow all cookies")',
+            'button:has-text("Accept All Cookies")',
+            'button:has-text("Accept all")',
+            'button:has-text("Accept")'
+        ];
+        for (const sel of acceptVariants) {
+            const btn = page.locator(sel).first();
+            if (await btn.isVisible().catch(() => false)) {
+                log('Accepting cookies...');
+                await btn.click().catch(() => {});
+                break;
+            }
+        }
 
-		await autoScroll(page, { maxScrolls: Math.max(10, Math.ceil(limitPerKeyword / 10)) });
-		const cards = await locateAdCards(page);
+        log('Scrolling results...');
+        await autoScroll(page, { maxScrolls: Math.max(10, Math.ceil(limitPerKeyword / 10)) });
+        const cards = await locateAdCards(page);
+        log(`Found ~${cards.length} ad cards, will inspect up to ${Math.min(cards.length, limitPerKeyword)}.`);
 
 		for (let i = 0; i < cards.length && i < limitPerKeyword; i += 1) {
 			const handle = cards[i];
 			try {
-				const ad = await parseAdvertiserFromAdCard(page, handle);
+                const ad = await parseAdvertiserFromAdCard(page, handle);
 				if (!ad || !ad.pageUrl || !ad.pageName || !ad.startedAt) continue;
 
 				const months = computeMonthsBetween(new Date(ad.startedAt), new Date());
@@ -96,22 +111,27 @@ export async function scrapeAdvertisers({ keywords, country, minMonths, limitPer
 						contact: { phone: null, email: null, address: null },
 						keywordsMatched: [keyword],
 					});
+                    log(`[${i + 1}/${Math.min(cards.length, limitPerKeyword)}] Added advertiser: ${ad.pageName} (${months} months)`);
 				} else {
 					const existing = advertiserMap.get(key);
 					existing.monthsRunning = Math.max(existing.monthsRunning, months);
 					if (!existing.keywordsMatched.includes(keyword)) existing.keywordsMatched.push(keyword);
+                    log(`[${i + 1}/${Math.min(cards.length, limitPerKeyword)}] Updated advertiser: ${ad.pageName} (months=${existing.monthsRunning})`);
 				}
 			} catch (err) {
 				// non-fatal; continue
+                log(`Card ${i + 1} error: ${String(err && err.message ? err.message : err)}`);
 			}
 		}
 	}
 
 	// Enrich each unique page with follower/contact details
 	const advertisers = Array.from(advertiserMap.values());
+    log(`Unique advertisers to enrich: ${advertisers.length}`);
 	for (let i = 0; i < advertisers.length; i += 1) {
 		const adv = advertisers[i];
 		try {
+            log(`[Enrich ${i + 1}/${advertisers.length}] Visiting page: ${adv.facebookPageUrl}`);
 			const details = await enrichPageDetails(page, adv.facebookPageUrl);
 			adv.followers = details.followers ?? adv.followers;
 			adv.contact = {
@@ -119,12 +139,16 @@ export async function scrapeAdvertisers({ keywords, country, minMonths, limitPer
 				email: details.email ?? adv.contact.email,
 				address: details.address ?? adv.contact.address,
 			};
+            log(`[Enrich ${i + 1}/${advertisers.length}] Done: followers=${adv.followers ?? 'n/a'}`);
 		} catch (err) {
 			// continue
+            log(`[Enrich ${i + 1}/${advertisers.length}] Error: ${String(err && err.message ? err.message : err)}`);
 		}
 	}
 
+    log('Closing browser...');
 	await browser.close();
+    log(`Completed. Returning ${advertisers.length} advertisers.`);
 	return advertisers;
 }
 

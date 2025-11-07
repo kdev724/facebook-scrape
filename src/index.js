@@ -36,6 +36,11 @@ async function main() {
 			default: 30000,
 			description: 'Navigation and action timeout (ms)',
 		})
+		.option('verbose', {
+			type: 'boolean',
+			default: true,
+			description: 'Print step-by-step progress to console',
+		})
 		.option('out', {
 			type: 'string',
 			default: 'output',
@@ -57,6 +62,7 @@ async function main() {
 		limitPerKeyword: argv.limit,
 		headless: argv.headless,
 		timeout: argv.timeout,
+		logger: argv.verbose ? (...args) => console.log('[scrape]', ...args) : undefined,
 	});
 
 	await writeCsvAndJson(results, { outDir: argv.out });
